@@ -43,8 +43,8 @@ public class StructVisitor extends AstNode.Visitor<Collection<TypeSpecGenerator<
     private final Set<TypeSpecGenerator<?>> defaultResult;
 
     public StructVisitor(
-        StructFlyweightGenerator generator,
-        TypeResolver resolver)
+            StructFlyweightGenerator generator,
+            TypeResolver resolver)
     {
         this.generator = generator;
         this.resolver = resolver;
@@ -53,7 +53,7 @@ public class StructVisitor extends AstNode.Visitor<Collection<TypeSpecGenerator<
 
     @Override
     public Collection<TypeSpecGenerator<?>> visitStruct(
-        AstStructNode structNode)
+            AstStructNode structNode)
     {
         String supertype = structNode.supertype();
         if (supertype != null)
@@ -68,21 +68,21 @@ public class StructVisitor extends AstNode.Visitor<Collection<TypeSpecGenerator<
 
     @Override
     public Collection<TypeSpecGenerator<?>> visitEnum(
-        AstEnumNode enumNode)
+            AstEnumNode enumNode)
     {
         return defaultResult();
     }
 
     @Override
     public Collection<TypeSpecGenerator<?>> visitUnion(
-        AstUnionNode unionNode)
+            AstUnionNode unionNode)
     {
         return defaultResult();
     }
 
     @Override
     public Collection<TypeSpecGenerator<?>> visitMember(
-        AstMemberNode memberNode)
+            AstMemberNode memberNode)
     {
         String memberName = memberNode.name();
         AstType memberType = memberNode.type();
@@ -105,15 +105,15 @@ public class StructVisitor extends AstNode.Visitor<Collection<TypeSpecGenerator<
             ParameterizedTypeName memberTypeName = ParameterizedTypeName.get(rawType, typeArguments);
             TypeName memberUnsignedTypeName = resolver.resolveType(memberUnsignedType);
             generator.addMember(
-                memberName,
-                memberTypeName,
-                memberUnsignedTypeName,
-                size,
-                sizeName,
-                sizeTypeName,
-                false,
-                defaultValue,
-                byteOrder);
+                    memberName,
+                    memberTypeName,
+                    memberUnsignedTypeName,
+                    size,
+                    sizeName,
+                    sizeTypeName,
+                    false,
+                    defaultValue,
+                    byteOrder);
         }
         else
         {
@@ -125,15 +125,15 @@ public class StructVisitor extends AstNode.Visitor<Collection<TypeSpecGenerator<
             }
             TypeName memberUnsignedTypeName = resolver.resolveType(memberUnsignedType);
             generator.addMember(
-                memberName,
-                memberTypeName,
-                memberUnsignedTypeName,
-                size,
-                sizeName,
-                sizeTypeName,
-                usedAsSize,
-                defaultValue,
-                byteOrder);
+                    memberName,
+                    memberTypeName,
+                    memberUnsignedTypeName,
+                    size,
+                    sizeName,
+                    sizeTypeName,
+                    usedAsSize,
+                    defaultValue,
+                    byteOrder);
         }
         return defaultResult();
     }

@@ -29,6 +29,7 @@ import static org.reaktivity.nukleus.maven.plugin.internal.generate.TypeNames.BI
 import static org.reaktivity.nukleus.maven.plugin.internal.generate.TypeNames.DIRECT_BUFFER_TYPE;
 import static org.reaktivity.nukleus.maven.plugin.internal.generate.TypeNames.UNSAFE_BUFFER_TYPE;
 
+import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -42,7 +43,14 @@ import java.util.Set;
 import java.util.function.IntBinaryOperator;
 import java.util.function.IntToLongFunction;
 import java.util.function.IntUnaryOperator;
+import java.util.stream.DoubleStream;
+import java.util.stream.IntStream;
+import java.util.stream.LongStream;
 
+import org.agrona.MutableDirectBuffer;
+import org.agrona.concurrent.UnsafeBuffer;
+import org.antlr.v4.runtime.CharStream;
+import org.junit.Test;
 import org.reaktivity.nukleus.maven.plugin.internal.ast.AstByteOrder;
 import org.reaktivity.nukleus.maven.plugin.internal.ast.AstNode;
 import org.reaktivity.nukleus.maven.plugin.internal.ast.AstNodeLocator;
@@ -90,6 +98,9 @@ public final class StructFlyweightTestGenerator extends ClassSpecGenerator
     private final String baseName;
     private final TypeSpec.Builder builder;
     private final TypeIdTestGenerator typeId;
+    private final BufferGenerator buffer;
+    private final FieldRWGenerator fieldRW;
+    private final FieldROGenerator fieldRO;
     private final MemberFieldGenerator memberField;
     private final MemberSizeConstantGenerator memberSizeConstant;
     private final MemberOffsetConstantGenerator memberOffsetConstant;
@@ -97,6 +108,7 @@ public final class StructFlyweightTestGenerator extends ClassSpecGenerator
     private final WrapMethodGenerator wrapMethod;
     private final LimitMethodGenerator limitMethod;
     private final ToStringMethodGenerator toStringMethod;
+    private final ShouldDefaultValuesMethodGenerator shouldDefaultValuesMethodGenerator;
     private final AstNodeLocator astNodeLocator;
 
     public StructFlyweightTestGenerator(
@@ -107,8 +119,10 @@ public final class StructFlyweightTestGenerator extends ClassSpecGenerator
         super(structName);
         this.baseName = baseName + "Test";
         this.builder = classBuilder(structName).addModifiers(PUBLIC, FINAL);
+        this.buffer = new BufferGenerator(structName, builder); // should add tests for correct type set
+        this.fieldRW = new FieldRWGenerator(structName, builder, baseName);
+        this.fieldRO = new FieldROGenerator(structName, builder, baseName);
         this.typeId = new TypeIdTestGenerator(structName, builder); // should add tests for correct type set
-
         this.memberSizeConstant = new MemberSizeConstantGenerator(structName, builder);
         this.memberOffsetConstant = new MemberOffsetConstantGenerator(structName, builder);
         this.memberField = new MemberFieldGenerator(structName, builder);
@@ -116,9 +130,8 @@ public final class StructFlyweightTestGenerator extends ClassSpecGenerator
         this.wrapMethod = new WrapMethodGenerator(structName);
         this.limitMethod = new LimitMethodGenerator();
         this.toStringMethod = new ToStringMethodGenerator();
-
+        this.shouldDefaultValuesMethodGenerator = new ShouldDefaultValuesMethodGenerator();
         this.astNodeLocator = astNodeLocator;
-        // = new SetterWithDefaultValuesGenerator()
     }
 
     public StructFlyweightTestGenerator typeId(
@@ -140,37 +153,37 @@ public final class StructFlyweightTestGenerator extends ClassSpecGenerator
         Object defaultValue,
         AstByteOrder byteOrder)
     {
-//        memberOffsetConstant.addMember(name, type, unsignedType, size, sizeName);
-//        memberSizeConstant.addMember(name, type, unsignedType, size);
-//        memberField.addMember(name, type, unsignedType, size, sizeName, byteOrder, defaultValue);
-//        memberAccessor.addMember(name, type, unsignedType, byteOrder, size, sizeName, defaultValue);
-//        limitMethod.addMember(name, type, unsignedType, size, sizeName);
-//        wrapMethod.addMember(name, type, unsignedType, size, sizeName, defaultValue);
-//        toStringMethod.addMember(name, type, unsignedType, size, sizeName);
-
         if (memberType.isDynamic())
         {
             AstNode memberNode = astNodeLocator.locateNode(null, memberType.name(), null);
             System.out.println("memberNode for " + memberType.name() + " is " + memberNode);
         }
-
+        shouldDefaultValuesMethodGenerator.addMember(name, type, unsignedType, size, sizeName, defaultValue);
         return this;
     }
 
     @Override
     public TypeSpec generate()
     {
-        typeId.build();
+        // TODO: build fields and methods here
+        buffer.build();
+        fieldRW.build();
+        fieldRO.build();
         memberOffsetConstant.build();
         memberSizeConstant.build();
         memberField.build();
         memberAccessor.build();
 
-        return builder
-//            .addMethod(wrapMethod.generate())
-//            .addMethod(limitMethod.generate())
-            .addMethod(toStringMethod.generate())
-            .build();
+        try
+        {
+            builder.addMethod(shouldDefaultValuesMethodGenerator.generate());
+        }
+        catch (UnsupportedOperationException uoe)
+        {
+        }
+
+        builder.addMethod(toStringMethod.generate());
+        return builder.build();
     }
 
     private static final class TypeIdTestGenerator extends ClassSpecMixinGenerator
@@ -205,6 +218,83 @@ public final class StructFlyweightTestGenerator extends ClassSpecGenerator
                         .addStatement("return TYPE_ID")
                         .build());
             }
+            return builder;
+        }
+    }
+
+    private static final class BufferGenerator extends ClassSpecMixinGenerator
+    {
+
+    private BufferGenerator(
+            ClassName thisType,
+            TypeSpec.Builder builder)
+    {
+        super(thisType, builder);
+    }
+
+    @Override
+    public TypeSpec.Builder build()
+    {
+        FieldSpec bufferFieldSpec = FieldSpec.builder(MutableDirectBuffer.class, "buffer", PRIVATE, FINAL)
+                .initializer("new $T($T.allocateDirect(100000)) \n" +
+                        "{\n"+
+                        "    {\n"+
+                        "        // Make sure the code is not secretly relying upon memory being initialized to 0\n" +
+                        "        setMemory(0, capacity(), (byte) 0xF);\n" +
+                        "    }\n" +
+                        "}", UnsafeBuffer.class, ByteBuffer.class)
+                .build();
+        builder.addField(bufferFieldSpec);
+
+        return builder;
+    }
+}
+
+    private static final class FieldRWGenerator extends ClassSpecMixinGenerator
+    {
+        private final ClassName fieldFWBuilderClassName;
+
+        private FieldRWGenerator(
+                ClassName thisType,
+                TypeSpec.Builder builder,
+                String baseName)
+        {
+            super(thisType, builder);
+            fieldFWBuilderClassName = thisType.peerClass(baseName + "FW.Builder");
+        }
+
+        @Override
+        public TypeSpec.Builder build()
+        {
+            FieldSpec fieldRWFieldSpec = FieldSpec.builder(fieldFWBuilderClassName, "fieldRW", PRIVATE, FINAL)
+                    .initializer("new $T()", fieldFWBuilderClassName)
+                    .build();
+            builder.addField(fieldRWFieldSpec);
+
+            return builder;
+        }
+    }
+
+    private static final class FieldROGenerator extends ClassSpecMixinGenerator
+    {
+        private final ClassName fieldFWClassName;
+
+        private FieldROGenerator(
+                ClassName thisType,
+                TypeSpec.Builder builder,
+                String baseName)
+        {
+            super(thisType, builder);
+            fieldFWClassName = thisType.peerClass(baseName + "FW");
+        }
+
+        @Override
+        public TypeSpec.Builder build()
+        {
+            FieldSpec fieldRWFieldSpec = FieldSpec.builder(fieldFWClassName,  "fieldRO", PRIVATE, FINAL)
+                    .initializer("new $T()", fieldFWClassName)
+                    .build();
+            builder.addField(fieldRWFieldSpec);
             return builder;
         }
     }
@@ -726,50 +816,6 @@ public final class StructFlyweightTestGenerator extends ClassSpecGenerator
         }
     }
 
-
-
-    private final class SetterWithDefaultValuesGenerator extends MethodSpecGenerator
-    {
-
-        protected SetterWithDefaultValuesGenerator()
-        {
-            super(methodBuilder("shouldSetAndGetValuesWithDefaults")
-                .addAnnotation(Override.class)
-                .addModifiers(PUBLIC)
-                .returns(int.class));
-        }
-
-
-        @Override
-        public MethodSpec generate()
-        {
-            return null;
-        }
-
-        public SetterWithDefaultValuesGenerator addMember(
-            String name,
-            TypeName type,
-            TypeName unsignedType,
-            int size,
-            String sizeName)
-        {
-            // add code that sets field as parameter
-
-            //
-
-
-
-            // add code that sets field as parameter
-
-
-            return this;
-        }
-
-
-    }
-
-
-
     private final class LimitMethodGenerator extends MethodSpecGenerator
     {
         private String anchorName;
@@ -1137,6 +1183,182 @@ public final class StructFlyweightTestGenerator extends ClassSpecGenerator
             return builder.build();
         }
 
+    }
+
+    private final class ShouldDefaultValuesMethodGenerator extends MethodSpecGenerator
+    {
+        private class FieldDefinition
+        {
+            String name;
+            TypeName type;
+            TypeName unsignedType;
+            Object defaultValue;
+        }
+
+        private boolean isNumericType(FieldDefinition fd)
+        {
+            return fd.type.equals(TypeName.INT) ||
+                    fd.type.equals(TypeName.LONG) ||
+                    fd.type.equals(TypeName.SHORT) ||
+                    fd.type.equals(TypeName.BYTE) ||
+                    fd.type.equals(TypeName.DOUBLE) ||
+                    fd.type.equals(TypeName.FLOAT);
+        }
+
+        private boolean isCharacterType(FieldDefinition fd)
+        {
+            return fd.type.equals(TypeName.CHAR);
+        }
+
+        private boolean isBooleanType(FieldDefinition fd)
+        {
+            return fd.type.equals(TypeName.BOOLEAN);
+        }
+
+        private boolean isArrayType(FieldDefinition fd)
+        {
+            return fd.name.contains("Array");
+        }
+
+        private CodeBlock generateNumericTypeValue(FieldDefinition fd)
+        {
+            CodeBlock.Builder builder = CodeBlock.builder();
+
+            if (isArrayType(fd))
+            {
+                TypeName actualType = fd.unsignedType != null ? fd.unsignedType : fd.type;
+                if (actualType.equals(TypeName.DOUBLE))
+                {
+                    return builder.add("$T.of(0, 0, 0, 0).iterator()", DoubleStream.class).build();
+                }
+                else if (actualType.equals(TypeName.LONG))
+                {
+                    return builder.add("$T.of(0, 0, 0, 0).iterator()", LongStream.class).build();
+                }
+                else
+                {
+                    return builder.add("$T.of(0, 0, 0, 0).iterator()", IntStream.class).build();
+                }
+            }
+            else
+            {
+                return builder.add("0").build();
+            }
+        }
+
+        private CodeBlock generateCharacterTypeValue(FieldDefinition fd)
+        {
+            CodeBlock.Builder builder = CodeBlock.builder();
+
+            if (isArrayType(fd))
+            {
+                return builder.add("$T.of(\'a\', \'a\', \'a\', \'a\').iterator()", CharStream.class).build();
+            }
+            else
+            {
+                return builder.add("a").build();
+            }
+        }
+
+        private CodeBlock generatePrimitiveValue(FieldDefinition fd)
+        {
+            if (isNumericType(fd))
+            {
+                return generateNumericTypeValue(fd);
+            }
+            else if (isCharacterType(fd))
+            {
+                return generateCharacterTypeValue(fd);
+            }
+            else if (isBooleanType(fd))
+            {
+                return CodeBlock.builder().add("true").build();
+            }
+            else
+            {
+                throw new UnsupportedOperationException("Unknown Field Definition " + fd);
+            }
+        }
+
+        private CodeBlock generateNonPrimitiveValue(FieldDefinition fd)
+        {
+            CodeBlock.Builder builder = CodeBlock.builder();
+
+            // TODO: add more types here as they become supported
+            if (!fd.type.toString().matches(".*\\.StringFW$"))
+            {
+                throw new UnsupportedOperationException("Cannot build members of type " + fd.type);
+            }
+
+            return builder.add("($L)null", "String").build();
+        }
+
+        private CodeBlock generateValue(FieldDefinition fd)
+        {
+            if (fd.type.isPrimitive())
+            {
+                return generatePrimitiveValue(fd);
+            }
+            else
+            {
+                return generateNonPrimitiveValue(fd);
+            }
+        }
+
+        private final List<FieldDefinition> defaulted = new LinkedList<>();
+        private final List<FieldDefinition> notDefaulted = new LinkedList<>();
+
+        private ShouldDefaultValuesMethodGenerator()
+        {
+            super(methodBuilder("shouldDefaultValues")
+                    .addAnnotation(Test.class)
+                    .addModifiers(PUBLIC)
+                    .addException(Exception.class));
+        }
+
+        public ShouldDefaultValuesMethodGenerator addMember(
+                String name,
+                TypeName type,
+                TypeName unsignedType,
+                int size,
+                String sizeName,
+                Object defaultValue)
+        {
+            FieldDefinition fd = new FieldDefinition();
+            fd.name = name;
+            fd.type = type;
+            fd.unsignedType = unsignedType;
+
+            if (defaultValue != null)
+            {
+                fd.defaultValue = defaultValue;
+                defaulted.add(fd);
+            }
+            else
+            {
+                notDefaulted.add(fd);
+            }
+            return this;
+        }
+
+        @Override
+        public MethodSpec generate()
+        {
+            CodeBlock.Builder initialization = CodeBlock.builder();
+            initialization.add("int limit = fieldRW.wrap(buffer, 0, 100)\n");
+
+            for(FieldDefinition fd : notDefaulted)
+            {
+                initialization.add("    .$L(", fd.name).add(generateValue(fd)).add(")\n");
+            }
+
+            initialization.add("    .build()\n" +
+                    "    .limit();\n");
+
+            return builder
+                    .addCode(initialization.build())
+                    .build();
+        }
     }
 
     private static boolean isStringType(
